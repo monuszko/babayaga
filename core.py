@@ -11,29 +11,37 @@ MAGIC_PATHS = 'FAWESDNBH' # Sort order, etc
 with open('gamedata.json', 'r') as datafile:
     data = json.load(datafile)
 
+def human(paths):
+    fixed = paths.split(',')[0]
+    humanized = ''.join([a + str(len(list(b))) for a, b in groupby(fixed)])
+    return paths.replace(fixed, humanized)
+
 def sort_func(dic):
     combined = dic['path1']+dic['path2']
     return (len(combined), combined)
 
-def spell_columns(spells, one_column=False, indent=4):
-    indent = indent * ' '
+def spell_columns(spells):
+    """Returns spells divided into two columns:
+    - battle spells
+    - rituals&forgings"""
     left, right = [], []
-    spells = sorted(spells, key=sort_func, reverse=True)
     for sp in spells:
         if sp['mode'] in ('ritual', 'forge'):
             right.append(sp)
         else:
             left.append(sp)
-    left = [' '.join([l['path1']+l['path2'], l['name']]).ljust(40) 
-            for l in left]
-    right = [' '.join([r['path1']+r['path2'], r['name']]).ljust(40) 
-            for r in right]
-    if one_column:
-        output = indent + left + right
-    else:
-        output = zip_longest(left, right, fillvalue=' ' * 40)
-        output = [indent + l + r for l, r in output]
-    return output
+    return (left, right)
+
+def reST_words(spells):
+    """[{spell:1}, {spell:2}] ---> [['paths1', 'name1'], ['paths2', 'name2']]
+    """
+    spells = [(sp['path1']+sp['path2'], sp['name'].replace("'", "\\\'"),
+               sp['level']) for sp in spells]
+    max_widths = [max([len(word) for word in col]) for col in zip(*spells)]
+    max_widths = [max(2, width) for width in max_widths]
+    spells = [[word.ljust(max_widths[nr]) for nr, word in enumerate(row)]
+                 for row in spells]
+    return spells
 
 
 class Mage:
@@ -44,18 +52,20 @@ class Mage:
         self.gcost = gcost
 
         self.generate_variants()
-        self.reduce_variants()
 
     def __str__(self):
-        return '{0} {1} ({2} gold)'.format(self.name, self.paths, self.gcost)
+        return '{0} {1} ({2} gold)'.format(self.name, 
+                human(self.paths), self.gcost)
 
     def can_cast(self, variant, spell):
-        if spell['path1'] in variant and spell['path2'] in variant:
-            return True 
-        return False 
+        for path in (spell['path1'], spell['path2']):
+            if path not in variant['paths']:
+                return False
+        return True
 
     def only_castable(self, variant, spells):
-        return [spell for spell in spells if self.can_cast(variant, spell)]
+        spells = [spell for spell in spells if self.can_cast(variant, spell)]
+        return sorted(spells, key=sort_func, reverse=True)
 
     def print_only_castable(self, variant, spells):
         castable = self.only_castable(variant[0], spells) 
@@ -66,10 +76,9 @@ class Mage:
     def spells_by_variant(self, spells, each_spell_once=True, ignored=set()):
         result = []
         dont_repeat = set() 
-        for var in self.variants:
-            paths = var[0]
-            chance = var[1]
-            castable = self.only_castable(paths, spells)
+        for var in self.annotated_variants():
+            chance = var['chance']
+            castable = self.only_castable(var, spells)
             if ignored:
                 castable = [sp for sp in castable
                         if sp['hash'] not in ignored]
@@ -78,7 +87,7 @@ class Mage:
                         if sp['hash'] not in dont_repeat]
                 for sp in castable:
                     dont_repeat.add(sp['hash'])
-            result.append(((paths, chance), castable))
+            result.append((var, castable))
         return result
     
 
@@ -114,6 +123,7 @@ class Mage:
         if tokens[0].isalpha():
             prefix = (tokens.pop(0), Frac(1, 1))
         factors.append([prefix])
+        self.prefix = {'paths': prefix[0], 'chance': prefix[1]}
         for token in tokens:
             factors.append(self.unpacked(token))
         while len(factors) > 1:
@@ -122,24 +132,49 @@ class Mage:
             product = [(''.join(sorted(paths, key=MAGIC_PATHS.index)), chance)
                                                   for paths, chance in product]
             factors.insert(0, product)
-        self.variants = factors[0]
+        self.variants = [{'paths': f[0], 'chance': f[1]}
+                for f in factors[0]]
+        self.reduce_variants()
 
     def annotated_variants(self):
-        pass
+        result = self.variants
+        prefix_in_variants = False
+        for var in result:
+            if len(result) == 1:
+                var['meta'] = 'only variant'
+                prefix_in_variants = True
+            elif var['paths'] == self.prefix['paths'] and var['paths']:
+                var['meta'] = 'possible prefix'
+                prefix_in_variants = True
+            else:
+                var['meta'] = ''
+        if not prefix_in_variants:
+            result.insert(0, self.prefix)
+            result[0]['meta'] = 'impossible prefix'
+        return result
+               
 
     def reduce_variants(self):
-        newvars = sorted(self.variants)
-        newvars = [(paths, sum(second for first, second in group)) 
-                for paths, group in groupby(newvars, key=itemgetter(0))]
-        newvars = [(paths, min(chance, Frac(1, 1))) for paths, chance in newvars]
-        newvars = sorted(newvars, key=itemgetter(1), reverse=True)
-        self.variants = newvars
+        tmp = dict()
+        for v in self.variants:
+            paths = v['paths']
+            if paths not in tmp:
+                tmp[paths] = v
+            else:
+                tmp[paths]['chance'] += v['chance']
+
+        self.variants = [v for v in tmp.values()]
+        self.variants.sort(key=itemgetter('chance'), reverse=True)
+
+        # Sanity check:
+        total = sum(v['chance'] for v in self.variants)
+        assert total == 1
 
     def possible_spells(self, spells):
         result = set()
         for spell in spells:
             for var in self.variants:
-                if self.can_cast(var[0], spell):
+                if self.can_cast(var, spell):
                     result.add(spell['hash'])
                     break
         return result
@@ -197,17 +232,49 @@ class Nation:
         return True
 
 
-    def print_spells_by_mage(self, spells):
+    def print_spells_by_mage(self, spells, two_columns=True, fmt='reST'):
         by_mage = self.spells_by_mage(spells)
         for mage, by_variant, includes in by_mage:
-            print(mage)
-            print('=' * 20)
+            m = str(mage)
+            print(m)
+            print('=' * len(m))
             if includes:
-                print(includes)
+                includes = ', '.join(includes)
+                includes = ' and'.join(includes.rsplit(',', 1))
+                print('Omitting spells from {0}.'.format(includes))
+            print()
             for var, sps in by_variant:
-                print('Variant {0} ({1} chance)'.format(var[0], var[1]))
-                for line in spell_columns(sps):
-                    print(line)
+                if var['meta'] == "only variant":
+                    desc = '(The sole variant)'
+                elif var['meta'] == "impossible prefix":
+                    desc = "(Doesn't occur) (Common to all)"
+                elif var['meta'] == 'possible prefix':
+                    desc = '({} chance) (Common to all)'.format(var['chance'])
+                else:
+                    desc = '({} chance)'.format(var['chance'])
+                print('Variant {0} {1}:'.format(human(var['paths']), desc))
+                if not sps:
+                    print()
+                    continue
+                col1, col2 = spell_columns(sps)
+                col1 = reST_words(col1)
+                col2 = reST_words(col2)
+                if len(col1) > len(col2):
+                    words = col2[0] if col2 else col1[0]
+                    rfill = ['\\'.ljust(len(word)) for word in words]
+                    lines = zip_longest(col1, col2, fillvalue = rfill)
+                else:
+                    words = col1[0] if col1 else col2[0]
+                    lfill = ['\\'.ljust(len(word)) for word in words]
+                    lines = zip_longest(col1, col2, fillvalue = lfill)
+                lines = [left + right for left, right in lines]
+                border = ['=' * len(word) for word in lines[0]]
+                lines.insert(0, border)
+                lines.append(border)
+                lines = [' '.join(line) for line in lines]
+                for line in lines:
+                    print(' '*2 + line)
+                print()
 
 
     def spells_by_mage(self, spells):
@@ -227,11 +294,13 @@ class Nation:
 
 
 mages = {int(k): v for k, v in data['mages'].items()} # no int keys in jascript
+print('.. contents::')
+print()
 for ndata in data['nations']:
     nation = Nation(ndata, mages)
-    print()
-    print(nation)
-    print('#' * 25)
+    nat = str(nation)
+    print(nat)
+    print('#' * len(nat))
     spells = data['spells'] + nation.nspells + data['items']
 
     nation.print_spells_by_mage(spells)

@@ -17,8 +17,17 @@ path_legend = {0: 'F',
                6: 'N',
                7: 'B',
                8: 'H',
-        }
+              }
 
+school_legend = {0: 'Conj',
+                 1: 'Alt',
+                 2: 'Evo',
+                 3: 'Cons',
+                 4: 'Ench',
+                 5: 'Thau',
+                 6: 'Bl',
+                 7: 'Holy',
+                }
 
 def unmasked(mask):
     result = ''
@@ -69,6 +78,8 @@ def read_mages(filename):
                 row[k] = int(v) if v.isdigit() else v
             unit_id = row['id']
             name = row['name'] if not row['uniquename'] else row['uniquename']
+            if '*' in name:
+                name = 'nameless'
             paths = ''
             gcost = row['gcost']
             # TODO: Gift of Reason + Asrapa (hidden magic paths)
@@ -155,8 +166,10 @@ def read_spells(filename, mages):
             mode = 'combat' if row['effect'] < 10000 else 'ritual'
             mage = mage if mage in mages else None
             hash_id = 's' + str(row['id'])
+            level = school_legend[row['school']] + str(row['researchlevel'])
             spells.append({'name': name, 'path1': path1, 'path2': path2,
-                'nations': nations, 'mage': mage, 'mode': mode, 'hash': hash_id})
+                'level': level, 'nations': nations, 'mage': mage,
+                'mode': mode, 'hash': hash_id})
     return spells
 
 def read_items(filename):
@@ -168,7 +181,7 @@ def read_items(filename):
             for k, v in row.items():
                 row[k] = int(v) if v.isdigit() else v
             name = row['name']
-            level = row['constlevel']
+            level = 'Cons' + str(row['constlevel'])
             path1 = row['mainpath'] * row['mainlevel']
             path2 = ''
             hash_id = 'i' + str(row['id'])
