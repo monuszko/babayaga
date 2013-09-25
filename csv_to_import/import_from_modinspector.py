@@ -1,12 +1,11 @@
 #! /usr/bin/env python3
 
-
-
-# TODO: Nyan Cat pretender mod
-
 import csv
 import json
+
 MAGIC_PATHS = 'FAWESDNBH' # Sort order, etc
+
+# TODO: Nyan Cat pretender mod
 
 path_legend = {0: 'F',
                1: 'A',
@@ -44,6 +43,28 @@ def unmasked(mask):
         if mask & k:
             result += legend[k]
     return result
+
+def get_uniques(magic_number):
+    uni_dict = {1: [306, 821, 822, 823, 824, 825], # Bind Ice Devil
+                2: [305, 826, 827, 828, 829],
+                3: [492, 818, 819, 820], # Bind Heliophagus
+                4: [906, 469], # King of Elemental Earth
+                5: [470], # Father Illearth
+                6: [356, 907, 908], # Queen of Elemental Water
+                7: [563, 911, 912], # Queen of Elemental Air
+                8: [631, 910], # King of Elemental Fire
+                9: [909], # King of Banefires
+                10: [446, 810, 900, 1405], # Bind Demon Lord
+                11: [621, 980, 981], # Awaken Treelord return 
+                12: [1375, 1376, 1377, 1492, 1493, 1494], # Call Amesha Spenta
+                13: [1484, 1485, 1486, 1487], # Summon Tlaloque
+                14: [2063, 2065, 2066, 2067, 2064, 2062] # Lord of Civiliz.
+                }
+    if magic_number in uni_dict:
+        return uni_dict[magic_number]
+    return [1349] # devourer of souls #TODO: Test this
+"""
+"""
 
 def read_sites(filename):
     """ Only used to get capitol only mages """
@@ -160,16 +181,34 @@ def read_spells(filename, mages):
             nation_fields = ['restricted' + str(n) for n in range(1, 8)]
             nations = [row[nation] for nation in nation_fields if row[nation]]
             # Summoned normal, unique commander mages  expand magic versatility:
-            mage = None
-            if row['effect'] in (10021, 10089, 10093):
-                mage = row['damage']
-            mode = 'combat' if row['effect'] < 10000 else 'ritual'
-            mage = mage if mage in mages else None
+
+            sumages = []
+            if row['effect'] in (10021, 10093):
+                sumages = [row['damage']]
+            elif row['effect'] == 10089:
+                sumages = get_uniques(row['damage'])
+            elif row['effect'] == 10100:
+                if row['damage'] == 1: # Hidden in Snow
+                    sumages = [1200] # Unfrozen Mage
+                elif row['damage'] == 2: # Hidden in Sand
+                    sumages = [1978] # Dust Priest
+            elif row['effect'] == 10076: # Tartarian Gate
+                sumages = [771, 772, 773, 774, 775, 776, 777]
+
+            sumages = [sm for sm in sumages if sm in mages]
+            boosts = '/'.join(mages[sm]['paths'] for sm in sumages)
+            boosts = '>' + boosts if sumages else boosts
+
+            mode = 'battle' if row['effect'] < 10000 else 'ritual'
             hash_id = 's' + str(row['id'])
             level = school_legend[row['school']] + str(row['researchlevel'])
+            gems = ''
+            if row['fatiguecost'] >= 100:
+                gems = int(row['fatiguecost']) // 100
+                gems = str(gems) + path1[0].lower()
             spells.append({'name': name, 'path1': path1, 'path2': path2,
-                'level': level, 'nations': nations, 'mage': mage,
-                'mode': mode, 'hash': hash_id})
+                'level': level, 'nations': nations, 'sumages': sumages,
+                'mode': mode, 'hash': hash_id, 'gems': gems, 'boosts': boosts})
     return spells
 
 def read_items(filename):
@@ -187,13 +226,16 @@ def read_items(filename):
             hash_id = 'i' + str(row['id'])
             if row['secondarypath']:
                 path2 = row['secondarypath'] * row['secondarylevel']
+            gems = str(len(path1) * 5) + path1[0].lower()
+            if path2:
+                gems += '+' + str(len(path2) * 5) + path2[0].lower()
             boosts = ''
             for path in MAGIC_PATHS:
                 if row[path]:
                     boosts += path * row[path]
             magic_items.append({'name': name, 'level': level, 'path1': path1,
                 'path2': path2, 'boosts': boosts, 'mode': 'forge',
-                'hash': hash_id})
+                'hash': hash_id, 'gems': gems})
 
     return magic_items
 

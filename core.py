@@ -1,5 +1,23 @@
 #! /usr/bin/env python3
-
+#
+# Baba Yaga - lists spells castable by mages in computer games 'Dominions 3'
+# and 'Dominions 4'.
+#
+#    Copyright (C) 2013  Marek Onuszko
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU Affero General Public License as
+#    published by the Free Software Foundation, either version 3 of the
+#    License, or (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU Affero General Public License for more details.
+#
+#    You should have received a copy of the GNU Affero General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
 import string
 import json
 from itertools import groupby, product, zip_longest
@@ -12,7 +30,10 @@ with open('gamedata.json', 'r') as datafile:
     data = json.load(datafile)
 
 def human(paths):
-    fixed = paths.split(',')[0]
+    if not paths.startswith(tuple(MAGIC_PATHS)):
+        fixed = ''
+    else:
+        fixed = paths.split(',')[0]
     humanized = ''.join([a + str(len(list(b))) for a, b in groupby(fixed)])
     return paths.replace(fixed, humanized)
 
@@ -35,8 +56,9 @@ def spell_columns(spells):
 def reST_words(spells):
     """[{spell:1}, {spell:2}] ---> [['paths1', 'name1'], ['paths2', 'name2']]
     """
-    spells = [(sp['path1']+sp['path2'], sp['name'].replace("'", "\\\'"),
-               sp['level']) for sp in spells]
+    spells = [(sp['path1']+sp['path2'], sp['gems'], 
+               sp['name'].replace("'", "\\\'"),
+               sp['level'], sp['boosts']) for sp in spells]
     max_widths = [max([len(word) for word in col]) for col in zip(*spells)]
     max_widths = [max(2, width) for width in max_widths]
     spells = [[word.ljust(max_widths[nr]) for nr, word in enumerate(row)]
@@ -63,6 +85,13 @@ class Mage:
                 return False
         return True
 
+    def chance_to_cast(self, spell):
+        chance = 0
+        for v in self.get_variants(add_prefix=False):
+            if self.can_cast(v, spell):
+                chance += v['chance']
+        return chance
+
     def only_castable(self, variant, spells):
         spells = [spell for spell in spells if self.can_cast(variant, spell)]
         return sorted(spells, key=sort_func, reverse=True)
@@ -76,7 +105,7 @@ class Mage:
     def spells_by_variant(self, spells, each_spell_once=True, ignored=set()):
         result = []
         dont_repeat = set() 
-        for var in self.annotated_variants():
+        for var in self.get_variants():
             chance = var['chance']
             castable = self.only_castable(var, spells)
             if ignored:
@@ -123,7 +152,7 @@ class Mage:
         if tokens[0].isalpha():
             prefix = (tokens.pop(0), Frac(1, 1))
         factors.append([prefix])
-        self.prefix = {'paths': prefix[0], 'chance': prefix[1]}
+        self.prefix = {'paths': prefix[0], 'chance': prefix[1], 'meta': ''}
         for token in tokens:
             factors.append(self.unpacked(token))
         while len(factors) > 1:
@@ -132,27 +161,24 @@ class Mage:
             product = [(''.join(sorted(paths, key=MAGIC_PATHS.index)), chance)
                                                   for paths, chance in product]
             factors.insert(0, product)
-        self.variants = [{'paths': f[0], 'chance': f[1]}
+        self.variants = [{'paths': f[0], 'chance': f[1], 'meta': ''}
                 for f in factors[0]]
         self.reduce_variants()
+        self.annotate_variants()
 
-    def annotated_variants(self):
-        result = self.variants
+    def annotate_variants(self):
         prefix_in_variants = False
-        for var in result:
-            if len(result) == 1:
-                var['meta'] = 'only variant'
+        for var in self.variants:
+            if len(self.variants) == 1:
+                var['meta'] = '(The sole variant)'
                 prefix_in_variants = True
             elif var['paths'] == self.prefix['paths'] and var['paths']:
-                var['meta'] = 'possible prefix'
+                var['meta'] = '({} chance) (Common to all)'.format(var['chance'])
                 prefix_in_variants = True
             else:
-                var['meta'] = ''
+                var['meta'] = '({} chance)'.format(var['chance'])
         if not prefix_in_variants:
-            result.insert(0, self.prefix)
-            result[0]['meta'] = 'impossible prefix'
-        return result
-               
+            self.prefix['meta'] = "(Doesn't occur) (Common to all)"
 
     def reduce_variants(self):
         tmp = dict()
@@ -169,6 +195,11 @@ class Mage:
         # Sanity check:
         total = sum(v['chance'] for v in self.variants)
         assert total == 1
+
+    def get_variants(self, add_prefix=True):
+        if 'sole variant' not in self.prefix['meta'] or not add_prefix:
+            return self.variants
+        return [self.prefix].extend(self.variants)
 
     def possible_spells(self, spells):
         result = set()
@@ -194,6 +225,11 @@ class Nation:
                     for xm in x_mages]
             setattr(self, word, x_mages)
 
+        self.nsmages = []
+        for spell in self.nspells:
+            if spell['sumages']:
+                self.nsmages.extend(spell['sumages'])
+        self.nsmages = [mages[ns] for ns in self.nsmages]
 
     def __str__(self):
         return '{0}: {1}'.format(self.name, self.epithet)
@@ -232,6 +268,12 @@ class Nation:
         return True
 
 
+    def first_in_second2(self, first, second, spells):
+        for spell in spells:
+            if first.chance_to_cast(spell) > second.chance_to_cast(spell):
+                return False
+        return True
+
     def print_spells_by_mage(self, spells, two_columns=True, fmt='reST'):
         by_mage = self.spells_by_mage(spells)
         for mage, by_variant, includes in by_mage:
@@ -244,15 +286,7 @@ class Nation:
                 print('Omitting spells from {0}.'.format(includes))
             print()
             for var, sps in by_variant:
-                if var['meta'] == "only variant":
-                    desc = '(The sole variant)'
-                elif var['meta'] == "impossible prefix":
-                    desc = "(Doesn't occur) (Common to all)"
-                elif var['meta'] == 'possible prefix':
-                    desc = '({} chance) (Common to all)'.format(var['chance'])
-                else:
-                    desc = '({} chance)'.format(var['chance'])
-                print('Variant {0} {1}:'.format(human(var['paths']), desc))
+                print('Variant {0} {1}:'.format(human(var['paths']), var['meta']))
                 if not sps:
                     print()
                     continue
@@ -261,12 +295,11 @@ class Nation:
                 col2 = reST_words(col2)
                 if len(col1) > len(col2):
                     words = col2[0] if col2 else col1[0]
-                    rfill = ['\\'.ljust(len(word)) for word in words]
-                    lines = zip_longest(col1, col2, fillvalue = rfill)
+                    fill = ['\\'.ljust(len(word)) for word in words]
                 else:
                     words = col1[0] if col1 else col2[0]
-                    lfill = ['\\'.ljust(len(word)) for word in words]
-                    lines = zip_longest(col1, col2, fillvalue = lfill)
+                    fill = ['\\'.ljust(len(word)) for word in words]
+                lines = zip_longest(col1, col2, fillvalue = fill)
                 lines = [left + right for left, right in lines]
                 border = ['=' * len(word) for word in lines[0]]
                 lines.insert(0, border)
@@ -301,6 +334,10 @@ for ndata in data['nations']:
     nat = str(nation)
     print(nat)
     print('#' * len(nat))
+    if nation.nsmages:
+        print('NSMAGES!')
+    for nsmage in nation.nsmages:
+        print(nsmage['name'], nsmage['paths'])
     spells = data['spells'] + nation.nspells + data['items']
 
     nation.print_spells_by_mage(spells)
